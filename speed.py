@@ -41,8 +41,6 @@ def prep_rv(in_df, asset_col, params_decay_default):
     in_df["log_pctChange"] = np.log(in_df["pctChange"])
     in_df["intraday_var"] = np.power(in_df["log_pctChange"], 2)
 
-    # Dynamic ceiling. Always select 99.8th percentile of all daily variance.
-    # In some of our spreadsheet model, this is a static ceiling; but in the Python backtest we set it a variable.
     max_daily_var = np.percentile(in_df["intraday_var"].fillna(0), params_decay_default["blackswan_pct"])
     in_df.loc[in_df["intraday_var"] > max_daily_var, "intraday_var"] = max_daily_var
     return in_df
@@ -53,12 +51,8 @@ def calcs_vol(in_df, params):
     coeff = params["coeff"]
     tenor_days = params["busdays"]
 
-    # Market standard annualized accumulated RV.
     df["stdRV"] = 100 * np.sqrt(coeff * df["intraday_var"].fillna(0).rolling(window=tenor_days, center=False).sum())
 
-    # Weighted-avg of RV by different tenors. This is to make RV ts closer to IV ts.
-    # If it is the first day of the current tenor: = sum of intraday_var of days of tenor;
-    # Else: = Prev-value - (weight * Prev-value / Tenor-Days) + weight * Today-intraday_var.
     this_initial = df.loc[0:tenor_days, "intraday_var"].sum()
     temp_df = df.loc[tenor_days + 1:, ["intraday_var"]]
     a = calc_func_vol(params["weight_rv"], tenor_days, np.array(temp_df["intraday_var"], dtype=np.float))
@@ -67,17 +61,13 @@ def calcs_vol(in_df, params):
     df.loc[tenor_days, "calcs"] = this_initial
     df.loc[tenor_days + 1:, "calcs"] = temp_df["calcs"]
 
-    # Close-Close weighted RV.
     df["clclRV"] = 100 * np.sqrt(coeff * df["calcs"].fillna(0))
 
-    # Blended RV. (EURJPY_Model from Col"DZ" to Col"EC")
-    # In FX original model, we also have "Parkinson Hi-Lo RV" calculations.(EURJPY_Model from Col"DM" to Col"DY")
     df["blend"] = params["weight_curr"] * df["clclRV"]
     return df
 
 
 def setup_decays(in_df, params, start_date, col_atm):
-    # Params used in build up the decay:`
     crnt_vb_decay = params["vb_decay"]
     crnt_VTrend_decay = params["vt_decay"]
     crnt_prctile_VH = params["vhh_pctl"]
@@ -87,46 +77,34 @@ def setup_decays(in_df, params, start_date, col_atm):
     crnt_HighVol_perctile = params["high_vol_pctl"]
     crnt_VT_to_LY = params["vt_to_ly"]
     crnt_low_perctile = params["vlow_pctl"]
-    # Calculate Outrights/Spot percentiles only from the starting dates.
+    
     if params["spot_start"] == "":
         crnt_VLow = np.percentile(in_df[col_atm], crnt_low_perctile)
     else:
         crnt_VLow = np.percentile(in_df.loc[in_df["date"] >= params["spot_start"], col_atm], crnt_low_perctile)
 
-    # Locate IV of the start-date.
     atmIV = in_df[in_df["date"] == start_date][col_atm].iloc[0]
-    # Either locate Blend_RV.
     candtRV_1 = in_df[in_df["date"] == start_date]["blend"].iloc[0]
-    # Or multiply "initial_atmIV" with a percentile.
     candtRV_2 = atmIV * crnt_HighVol_perctile / 100
-    # Always go with the larger one.
     RV = max(candtRV_1, candtRV_2)
-    # Starting value for V-Trend curve (middle curve).
     VT_start = crnt_blended_iv / 100 * atmIV + crnt_blended_rv / 100 * RV
 
     candtVBstart_1 = crnt_VLow
     candtVBstart_2_1 = (VT_start - crnt_VLow) * crnt_VT_to_LY / 100 + crnt_VLow
     candtVBstart_2_2 = VT_start * crnt_HighVol_perctile / 100
     candtVBstart_2 = min(candtVBstart_2_1, candtVBstart_2_2)
-    # initial_VB_start = max(candtVBstart_1,candtVBstart_2)
-    # Starting value for V-Base curve (lower curve).
     VB_start = candtVBstart_2
 
-    # Starting value for V-High curve (higher curve).
     VH_start = VT_start + (VT_start - VB_start) * crnt_High_multiple
     VB2VT_ratio = VB_start / VT_start
 
-    # ******** BUILD UP THIS SET OF DECAY CURVES(x4) ********
-    # Start from the starting-day.
     this_decay = in_df.loc[in_df.date >= start_date, ["date", col_atm]].reset_index(drop=True)
-    # Calculate IV percentiles only from the starting dates.
     if params["iv_start"] == "":
         this_decay["value_VH_prctile"] = np.percentile(in_df[col_atm], crnt_prctile_VH)
     else:
         tmp_highpct = np.percentile(in_df.loc[in_df["date"] >= params["iv_start"], col_atm], crnt_prctile_VH)
         this_decay["value_VH_prctile"] = tmp_highpct
 
-    # Set up formulas in VT and VB as they are independent.
     this_decay.loc[0, "VT"] = VT_start
     this_decay.loc[0, "VB"] = VB_start
 
@@ -134,7 +112,6 @@ def setup_decays(in_df, params, start_date, col_atm):
     this_decay["VB"] = VB_start * (crnt_vb_decay ** this_decay.index)
     this_decay["VT"] = VT_start * (crnt_VTrend_decay ** this_decay.index) + VB_start * a
 
-    # Set up formulas in VH and VHH.
     this_decay["weighted_diff_VH"] = this_decay["VT"] + (this_decay["VT"] - this_decay["VB"]) * crnt_High_multiple
     this_decay["VH"] = this_decay[["weighted_diff_VH", "value_VH_prctile"]].max(axis=1)
     this_decay["VHH"] = this_decay["weighted_diff_VH"]
