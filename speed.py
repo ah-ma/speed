@@ -42,7 +42,11 @@ def prep_rv(in_df, asset_col, params_decay_default):
     in_df["intraday_var"] = np.power(in_df["log_pctChange"], 2)
 
     max_daily_var = np.percentile(in_df["intraday_var"].fillna(0), params_decay_default["blackswan_pct"])
-    in_df.loc[in_df["intraday_var"] > max_daily_var, "intraday_var"] = max_daily_var
+    
+    #in_df.loc[in_df["intraday_var"] > max_daily_var, "intraday_var"] = max_daily_var
+    vals = in_df['intraday_var'].values
+    in_df['intraday_var'] = np.where(vals > max_daily_var, max_daily_var, vals)
+
     return in_df
 
 
@@ -53,13 +57,24 @@ def calcs_vol(in_df, params):
 
     df["stdRV"] = 100 * np.sqrt(coeff * df["intraday_var"].fillna(0).rolling(window=tenor_days, center=False).sum())
 
-    this_initial = df.loc[0:tenor_days, "intraday_var"].sum()
-    temp_df = df.loc[tenor_days + 1:, ["intraday_var"]]
+    #this_initial = df.loc[0:tenor_days, "intraday_var"].sum()
+    this_initial = df["intraday_var"].values[0:tenor_days+1].sum()
+    
+    #temp_df = df.loc[tenor_days + 1:, ["intraday_var"]]
+    temp_df = pd.DataFrame({'intraday_var':df['intraday_var'].values[tenor_days + 1:]})
+    
     a = calc_func_vol(params["weight_rv"], tenor_days, np.array(temp_df["intraday_var"], dtype=np.float))
     temp_df["calcs"] = this_initial * ((1 - (params["weight_rv"] / tenor_days)) **
                                        (1 + temp_df.index - temp_df.index[0])) + params["weight_rv"] * a
+    
     df.loc[tenor_days, "calcs"] = this_initial
-    df.loc[tenor_days + 1:, "calcs"] = temp_df["calcs"]
+    #col_idx = df.columns.tolist().index('calcs')
+    #df.iat[tenor_days, col_idx] = this_initial
+    
+    #df.loc[tenor_days + 1:, "calcs"] = temp_df["calcs"]    
+    vals = df['calcs'].values
+    vals[tenor_days + 1:] = temp_df['calcs'].values
+    df['calcs'] = vals        
 
     df["clclRV"] = 100 * np.sqrt(coeff * df["calcs"].fillna(0))
 
@@ -68,15 +83,15 @@ def calcs_vol(in_df, params):
 
 
 def setup_decays(in_df, params, start_date, col_atm):
-    crnt_vb_decay = params["vb_decay"]
-    crnt_VTrend_decay = params["vt_decay"]
-    crnt_prctile_VH = params["vhh_pctl"]
-    crnt_High_multiple = params["vh_multiple"]
-    crnt_blended_iv = params["iv_pct"]
-    crnt_blended_rv = params["rv_pct"]
+    crnt_vb_decay         = params["vb_decay"]
+    crnt_VTrend_decay     = params["vt_decay"]
+    crnt_prctile_VH       = params["vhh_pctl"]
+    crnt_High_multiple    = params["vh_multiple"]
+    crnt_blended_iv       = params["iv_pct"]
+    crnt_blended_rv       = params["rv_pct"]
     crnt_HighVol_perctile = params["high_vol_pctl"]
-    crnt_VT_to_LY = params["vt_to_ly"]
-    crnt_low_perctile = params["vlow_pctl"]
+    crnt_VT_to_LY         = params["vt_to_ly"]
+    crnt_low_perctile     = params["vlow_pctl"]
     
     if params["spot_start"] == "":
         crnt_VLow = np.percentile(in_df[col_atm], crnt_low_perctile)
@@ -118,26 +133,45 @@ def setup_decays(in_df, params, start_date, col_atm):
     this_decay.loc[this_decay["VH"] != this_decay["value_VH_prctile"], "VHH"] = np.nan
     this_decay = this_decay[["date", col_atm, "VT", "VB", "VH", "VHH"]]
     return this_decay
-
-
+"""
+dl = df.copy()
+iy = initial_decay.copy()
+del dl['vol']
+if 1:
+    start = time()
+    for i in range(10000):
+        #z= pd.DataFrame({c[0].columns[0]:np.append(c[0].values,c[1].values)})
+        z=pd.concat([c[0],c[1]], axis=0, sort=False).reset_index(drop=True)
+    print(time()-start)
+    time.strftime("%Y-%m-%d %H:%M:%S", start_datestr+' 00:00:00' )
+    datetime.strptime(start_datestr+' 00:00:00', "%Y-%m-%d %H:%M:%S")
+#"""
 def decay_sets_generator(df_spot, df_vol, params):
-    asset_col = [k for k in list(df_spot) if k != "date"][0]
-    tenor_col = [k for k in list(df_vol) if k != "date"][0]
-    start_datestr = min(df_spot["date"].iloc[0], df_vol["date"].iloc[0])
-    start_date = pd.to_datetime(start_datestr, format="%Y-%m-%d")
-    end_datestr = max(df_spot.loc[len(df_spot) - 1, "date"], df_vol.loc[len(df_vol) - 1, "date"])
-    end_date = pd.to_datetime(end_datestr, format="%Y-%m-%d")
-    all_dates = pd.DataFrame(pd.date_range(start_date, end_date, freq=BDay()).strftime("%Y-%m-%d"), columns=["date"])
+    asset_col      = [k for k in df_spot.columns if k != "date"][0]
+    tenor_col      = [k for k in df_vol.columns if k != "date"][0]
+    start_datestr  = min(df_spot['date'].values[0], df_vol["date"].values[0])      #min(df_spot["date"].iloc[0], df_vol["date"].iloc[0])
+    start_date     = pd.to_datetime(start_datestr, format="%Y-%m-%d")
+    end_datestr    = max(df_spot['date'].values[-1], df_vol["date"].values[-1])    #max(df_spot.loc[len(df_spot) - 1, "date"], df_vol.loc[len(df_vol) - 1, "date"])
+    end_date       = pd.to_datetime(end_datestr, format="%Y-%m-%d")
+    all_dates      = pd.DataFrame(pd.date_range(start_date, end_date, freq=BDay()).strftime("%Y-%m-%d"), columns=["date"])
 
+    """
     def align(df_dates, df_spot, df_vol):
         df = pd.merge(df_dates, df_spot, how="left", on="date")
         df = pd.merge(df, df_vol, how="left", on="date")
         df = df.replace('null', np.nan).fillna(method="ffill")
         df = df.dropna(axis=0, how='any').reset_index(drop=True)
         return df
-
+    """
+    def align(df_dates, df_spot, df_vol):
+        df = df_dates.set_index('date').join(df_spot.set_index('date'), how='left')
+        df = df.join(df_vol.set_index('date'), how='left')
+        df.reset_index(level=0, inplace=True)
+        df = df.replace('null', np.nan).fillna(method="ffill")
+        df = df.dropna(axis=0, how='any').reset_index(drop=True)
+        return df
+    
     df = align(all_dates, df_spot, df_vol)
-
     df = prep_rv(df, asset_col, params)
     df = calcs_vol(df, params)
 
@@ -146,14 +180,28 @@ def decay_sets_generator(df_spot, df_vol, params):
     initial_decay = setup_decays(this_df, params, initial_startDate, tenor_col)
 
     tenor_compile_dates = pd.DataFrame(initial_startDate, index=range(1), columns=["StartDate"])  # Track all dates.
-    clean_decays = pd.merge(df[["date"]], initial_decay, how="left", on=["date"])  # Track all decays.
+    
+    #clean_decays = pd.merge(df[["date"]], initial_decay, how="left", on=["date"])  # Track all decays.
+    clean_decays = df[["date"]].set_index('date').join(initial_decay.set_index('date'),how='left')
+    clean_decays.reset_index(level=0, inplace=True)
+
 
     FLAG_PEAK = True
     last_startDate = initial_startDate
     last_startRow = df[df["date"] == last_startDate].index[0]
-    last_set = pd.merge(df[["date", tenor_col]], initial_decay[["date", "VT", "VB", "VH", "VHH"]], how="left", on="date")
+    
+    #last_set = pd.merge(df[["date", tenor_col]], initial_decay[["date", "VT", "VB", "VH", "VHH"]], how="left", on="date")
+    last_set = df.set_index('date').join(initial_decay[['date', "VT", "VB", "VH", "VHH"]].set_index('date'),how='left')
+    last_set.reset_index(level=0, inplace=True)
+    #print(last_set['date'])
+
+    #return df, initial_decay, tenor_col, last_set
+
     while FLAG_PEAK:
-        rule_1_1 = last_set[tenor_col] > last_set[last_set["date"] == last_startDate][tenor_col].iloc[0]
+        #rule_1_1 = last_set[tenor_col] > last_set[last_set["date"] == last_startDate][tenor_col].iloc[0]
+        #print(last_startDate,last_set["date"].values)
+        rule_1_1 = last_set[tenor_col] > last_set[tenor_col][np.where(last_set["date"].values == last_startDate)[0][0]]
+        
         rule_1_1[0:last_startRow] = False
         rule_1_2 = last_set[tenor_col] > last_set["VH"]
         rule_1_2[0:last_startRow] = False
@@ -199,16 +247,21 @@ def decay_sets_generator(df_spot, df_vol, params):
                 this_decay = setup_decays(this_df, params, this_startDate, tenor_col)
 
                 temp_compile_decays = pd.DataFrame(this_startDate, index=range(1), columns=["StartDate"])
+                
                 tenor_compile_dates = pd.concat([tenor_compile_dates, temp_compile_decays], axis=0, sort=False).reset_index(drop=True)
-
+                #tenor_compile_dates = pd.DataFrame({tenor_compile_dates.columns[0]:np.append(tenor_compile_dates.values, temp_compile_decays.values)}) 
+            
                 this_decay = this_decay[this_decay["date"] >= this_startDate]
                 clean_decays = clean_decays[clean_decays["date"] < this_startDate]
                 clean_decays = pd.concat([clean_decays, this_decay], sort=False)
 
                 last_startDate = this_startDate
-                last_startRow = df[df["date"] == last_startDate].index[0]
-                last_set = pd.merge(df[["date", tenor_col]], this_decay[["date", "VT", "VB", "VH", "VHH"]],
-                                    how="left", on="date")
+                
+                #last_startRow = df[df["date"] == last_startDate].index[0]
+                #last_set = pd.merge(df[["date", tenor_col]], this_decay[["date", "VT", "VB", "VH", "VHH"]], how="left", on="date")
+                last_startRow = np.where(df["date"].values == last_startDate)[0][0]
+                last_set = df.set_index('date').join(this_decay[['date', "VT", "VB", "VH", "VHH"]].set_index('date'),how='left')
+                last_set.reset_index(level=0, inplace=True)
 
             else:
                 FLAG_PEAK = False
